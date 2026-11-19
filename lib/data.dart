@@ -1,7 +1,5 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 const kPri = Color(0xFF009688);
 const kStat = [Color(0xFF2E9E4F), Color(0xFFEF8A00), Color(0xFFE53935)];
@@ -245,72 +243,167 @@ String f(double v) =>
 int stat(Rec r) => byName[r.n]!.judge(r.v, app.male);
 
 class AppState extends ChangeNotifier {
-  bool male = true;
-  // 저장된 데이터가 없을 때(처음 실행)만 보이는 샘플입니다.
-  final List<Checkup> checkups = [
-    Checkup(
-      '2023',
-      '2023-05-12',
-      '서울의원',
-      mk([22.4, 116, 74, 90, 14.6, 180, 120, 62, 98, 24, 22, 30, 0.9]),
-    ),
-    Checkup(
-      '2024',
-      '2024-05-16',
-      '서울의원',
-      mk([23.1, 122, 78, 93, 14.4, 188, 135, 58, 102, 27, 26, 38, 1.0]),
-    ),
-    Checkup(
-      '2025',
-      '2025-05-20',
-      '한국병원',
-      mk([23.8, 126, 82, 95, 14.2, 190, 148, 55, 105, 30, 31, 45, 1.0]),
-    ),
-    Checkup(
-      '2026',
-      '2026-05-18',
-      '한국병원',
-      mk([24.6, 132, 86, 102, 14.0, 205, 205, 51, 120, 36, 40, 70, 1.1]),
-    ),
-  ];
+  final _db = Supabase.instance.client;
 
-  Future<void> load() async {
-    final p = await SharedPreferences.getInstance();
-    male = p.getBool('male') ?? true;
-    final s = p.getString('checkups');
-    if (s != null) {
-      checkups
-        ..clear()
-        ..addAll((jsonDecode(s) as List).map((e) => Checkup.fromJson(e)));
+  bool male = true;
+  bool busy = false;
+
+  final List<Checkup> checkups = [];
+
+  String? _owner;
+  int _version = 0;
+  bool _ready = false;
+
+  bool _active(String uid, int version) =>
+      _owner == uid && _version == version && _db.auth.currentUser?.id == uid;
+
+  void clearSession(String uid) {
+    if (_owner != uid) return;
+
+    _version++;
+    _owner = null;
+    _ready = false;
+    busy = false;
+    male = true;
+    checkups.clear();
+  }
+
+  String _requireUser() {
+    final uid = _db.auth.currentUser?.id;
+
+    if (uid == null || uid != _owner || !_ready) {
+      throw StateError('로그인이 필요합니다.');
+    }
+
+    if (busy) {
+      throw StateError('다른 작업이 진행 중입니다.');
+    }
+
+    return uid;
+  }
+
+  // 로그인한 사용자의 데이터 불러오기
+  Future<void> load(String uid) async {
+    if (_db.auth.currentUser?.id != uid) {
+      throw StateError('로그인이 필요합니다.');
+    }
+
+    final version = ++_version;
+    _owner = uid;
+    _ready = false;
+    busy = false;
+    male = true;
+    checkups.clear();
+
+    final profile = await _db
+        .from('profiles')
+        .select('male')
+        .eq('user_id', uid)
+        .maybeSingle();
+
+    final rows = await _db
+        .from('health_checkups')
+        .select('id, date, hospital, r')
+        .eq('user_id', uid)
+        .order('date', ascending: true);
+
+    if (!_active(uid, version)) {
+      throw StateError('로그인 상태가 변경되었습니다.');
+    }
+
+    final records = rows
+        .map((row) => Checkup.fromJson(Map<String, dynamic>.from(row)))
+        .toList();
+
+    male = (profile?['male'] as bool?) ?? true;
+
+    checkups
+      ..clear()
+      ..addAll(records);
+
+    _ready = true;
+  }
+
+  // 사용자 성별 설정 저장
+  Future<void> setMale(bool v) async {
+    final uid = _requireUser();
+    final version = _version;
+
+    busy = true;
+    notifyListeners();
+
+    try {
+      await _db.from('profiles').upsert({'user_id': uid, 'male': v});
+
+      if (!_active(uid, version)) {
+        throw StateError('로그인 상태가 변경되었습니다.');
+      }
+
+      male = v;
+    } finally {
+      if (_active(uid, version)) {
+        busy = false;
+        notifyListeners();
+      }
     }
   }
 
-  Future<void> _save() async {
-    final p = await SharedPreferences.getInstance();
-    await p.setBool('male', male);
-    await p.setString(
-      'checkups',
-      jsonEncode(checkups.map((c) => c.toJson()).toList()),
-    );
+  // 건강검진 결과 저장
+  Future<void> add(Checkup c) async {
+    final uid = _requireUser();
+    final version = _version;
+
+    busy = true;
+    notifyListeners();
+
+    try {
+      await _db.from('health_checkups').insert({'user_id': uid, ...c.toJson()});
+
+      if (!_active(uid, version)) {
+        throw StateError('로그인 상태가 변경되었습니다.');
+      }
+
+      checkups.add(c);
+      checkups.sort((a, b) => a.date.compareTo(b.date));
+    } finally {
+      if (_active(uid, version)) {
+        busy = false;
+        notifyListeners();
+      }
+    }
   }
 
-  void setMale(bool v) {
-    male = v;
-    notifyListeners();
-    _save();
-  }
+  // 건강검진 결과 삭제
+  Future<void> remove(String id) async {
+    final uid = _requireUser();
+    final version = _version;
 
-  void add(Checkup c) {
-    checkups.add(c);
-    checkups.sort((a, b) => a.date.compareTo(b.date));
+    busy = true;
     notifyListeners();
-    _save();
-  }
 
-  void remove(String id) {
-    checkups.removeWhere((c) => c.id == id);
-    notifyListeners();
-    _save();
+    try {
+      final deleted = await _db
+          .from('health_checkups')
+          .delete()
+          .eq('id', id)
+          .eq('user_id', uid)
+          .select('id');
+
+      if (!_active(uid, version)) {
+        throw StateError('로그인 상태가 변경되었습니다.');
+      }
+
+      if (deleted.isEmpty) {
+        throw StateError('삭제할 기록이 없습니다.');
+      }
+
+      checkups.removeWhere((c) => c.id == id);
+    } finally {
+      if (_active(uid, version)) {
+        busy = false;
+        notifyListeners();
+      }
+    }
   }
 }
 

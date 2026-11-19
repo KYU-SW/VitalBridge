@@ -22,11 +22,16 @@ class _ResultState extends State<ResultScreen> {
   }
 
   Future<void> confirmDelete(Checkup ck) async {
+    if (app.busy) return;
+
     final ok = await showDialog<bool>(
       context: context,
       builder: (d) => AlertDialog(
         title: const Text('검진 기록 삭제'),
-        content: Text('${ck.date} · ${ck.hospital}\n이 기록을 삭제할까요? 되돌릴 수 없어요.'),
+        content: Text(
+          '${ck.date} · ${ck.hospital}\n'
+          '이 기록을 삭제할까요? 되돌릴 수 없어요.',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(d, false),
@@ -39,9 +44,25 @@ class _ResultState extends State<ResultScreen> {
         ],
       ),
     );
-    if (ok == true) {
-      app.remove(ck.id);
-      setState(() => sid = app.checkups.isEmpty ? null : app.checkups.last.id);
+
+    if (!mounted || ok != true) return;
+
+    try {
+      await app.remove(ck.id);
+
+      if (!mounted) return;
+
+      setState(() {
+        sid = app.checkups.isEmpty ? null : app.checkups.last.id;
+      });
+
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('검진 기록이 삭제되었습니다.')));
+    } catch (_) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('삭제에 실패했습니다.')));
     }
   }
 

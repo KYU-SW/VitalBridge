@@ -91,6 +91,7 @@ class _EntryState extends State<EntryScreen> {
   final sq = TextEditingController();
   final hosp = TextEditingController();
   DateTime date = DateTime.now();
+  bool saving = false;
 
   @override
   void initState() {
@@ -113,27 +114,59 @@ class _EntryState extends State<EntryScreen> {
   void toast(String m) =>
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
 
-  void save() {
-    if (ctrls.isEmpty) return toast('검사 항목을 1개 이상 추가해 주세요.');
+  Future<void> save() async {
+    if (saving) return;
+
+    if (ctrls.isEmpty) {
+      toast('검사 항목을 1개 이상 추가해 주세요.');
+      return;
+    }
+
     final recs = <Rec>[];
+
     for (final it in items.where(ctrls.containsKey)) {
       final v = double.tryParse(ctrls[it]!.text);
-      if (v == null) return toast('${it.name} 값을 숫자로 입력해 주세요.');
+
+      if (v == null || !v.isFinite) {
+        toast('${it.name} 값을 올바른 숫자로 입력해 주세요.');
+        return;
+      }
+
       recs.add(Rec(it.name, v));
     }
+
     final id = DateTime.now().millisecondsSinceEpoch.toString();
+
     final h = hosp.text.trim();
-    app.add(
-      Checkup(
-        id,
-        date.toIso8601String().substring(0, 10),
-        h.isEmpty ? '직접 입력' : h,
-        recs,
-      ),
-    );
-    final nav = Navigator.of(context);
-    nav.popUntil((r) => r.isFirst);
-    nav.push(MaterialPageRoute(builder: (_) => ResultScreen(selectId: id)));
+
+    setState(() => saving = true);
+
+    try {
+      await app.add(
+        Checkup(
+          id,
+          date.toIso8601String().substring(0, 10),
+          h.isEmpty ? '직접 입력' : h,
+          recs,
+        ),
+      );
+
+      if (!mounted) return;
+
+      final nav = Navigator.of(context);
+
+      nav.popUntil((r) => r.isFirst);
+
+      nav.push(MaterialPageRoute(builder: (_) => ResultScreen(selectId: id)));
+    } catch (_) {
+      if (mounted) {
+        toast('저장에 실패했습니다. 다시 시도해 주세요.');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => saving = false);
+      }
+    }
   }
 
   @override
@@ -293,7 +326,11 @@ class _EntryState extends State<EntryScreen> {
           const SizedBox(height: 12),
           SizedBox(
             height: 54,
-            child: FilledButton(onPressed: save, child: const Text('저장하기')),
+
+            child: FilledButton(
+              onPressed: saving ? null : save,
+              child: Text(saving ? '저장 중...' : '저장하기'),
+            ),
           ),
         ],
       ),

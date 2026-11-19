@@ -1,31 +1,141 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'data.dart';
 import 'widgets/common.dart';
 import 'screens/upload_screen.dart';
 import 'screens/result_screen.dart';
 import 'screens/history_screen.dart';
+import 'screens/login_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await app.load();
+
+  await Supabase.initialize(
+    url: 'https://qyedncouxpfqcbhgetsn.supabase.co',
+    publishableKey: 'sb_publishable_1h5_Ia8JSA_csjdn4wWWWw_82iNI1C7',
+  );
+
+  //await app.load();
   runApp(const HealthApp());
 }
 
-class HealthApp extends StatelessWidget {
+final supabase = Supabase.instance.client;
+
+class HealthApp extends StatefulWidget {
   const HealthApp({super.key});
+
   @override
-  Widget build(BuildContext c) => MaterialApp(
-    title: '건강검진 도우미',
-    debugShowCheckedModeBanner: false,
-    theme: ThemeData(colorSchemeSeed: kPri, useMaterial3: true),
-    darkTheme: ThemeData(
-      colorSchemeSeed: kPri,
-      useMaterial3: true,
-      brightness: Brightness.dark,
-    ),
-    home: const HomeScreen(),
-  );
+  State<HealthApp> createState() => _HealthAppState();
+}
+
+class _HealthAppState extends State<HealthApp> {
+  final auth = Supabase.instance.client.auth;
+
+  late final authStream = auth.onAuthStateChange;
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<AuthState>(
+      stream: authStream,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          debugPrint('Authentication stream error');
+        }
+
+        final uid = auth.currentSession?.user.id;
+
+        return MaterialApp(
+          key: ValueKey(uid),
+          title: 'VitalBridge',
+          debugShowCheckedModeBanner: false,
+          theme: ThemeData(colorSchemeSeed: kPri, useMaterial3: true),
+          darkTheme: ThemeData(
+            colorSchemeSeed: kPri,
+            useMaterial3: true,
+            brightness: Brightness.dark,
+          ),
+          home: uid == null ? const LoginScreen() : AccountHome(userId: uid),
+        );
+      },
+    );
+  }
+}
+
+class AccountHome extends StatefulWidget {
+  final String userId;
+
+  const AccountHome({super.key, required this.userId});
+
+  @override
+  State<AccountHome> createState() => _AccountHomeState();
+}
+
+class _AccountHomeState extends State<AccountHome> {
+  late Future<void> loading;
+
+  @override
+  void initState() {
+    super.initState();
+    loading = app.load(widget.userId);
+  }
+
+  @override
+  void dispose() {
+    app.clearSession(widget.userId);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<void>(
+      future: loading,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+
+        if (snapshot.hasError) {
+          return Scaffold(
+            body: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('데이터를 불러오지 못했습니다.'),
+                  FilledButton(
+                    onPressed: () {
+                      setState(() {
+                        loading = app.load(widget.userId);
+                      });
+                    },
+                    child: const Text('다시 시도'),
+                  ),
+                  TextButton(
+                    onPressed: () async {
+                      try {
+                        await Supabase.instance.client.auth.signOut();
+                      } catch (_) {
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('로그아웃 실패')),
+                          );
+                        }
+                      }
+                    },
+                    child: const Text('로그아웃'),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
+
+        return const HomeScreen();
+      },
+    );
+  }
 }
 
 // ───────── 홈 ─────────
@@ -49,7 +159,26 @@ class HomeScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext c) => Scaffold(
-    appBar: AppBar(title: const Text('건강검진 도우미')),
+    appBar: AppBar(
+      title: const Text('VitalBridge'),
+      actions: [
+        IconButton(
+          icon: const Icon(Icons.logout),
+          tooltip: '로그아웃',
+          onPressed: () async {
+            try {
+              await Supabase.instance.client.auth.signOut();
+            } catch (_) {
+              if (c.mounted) {
+                ScaffoldMessenger.of(c)
+                    .showSnackBar(const SnackBar(content: Text('로그아웃 실패')));
+              }
+            }
+          },
+        ),
+      ],
+    ),
+
     body: ListenableBuilder(
       listenable: app,
       builder: (c, _) => ListView(
@@ -68,7 +197,20 @@ class HomeScreen extends StatelessWidget {
                   ButtonSegment(value: false, label: Text('여')),
                 ],
                 selected: {app.male},
-                onSelectionChanged: (s) => app.setMale(s.first),
+
+                onSelectionChanged: app.busy
+                    ? null
+                    : (s) async {
+                        try {
+                          await app.setMale(s.first);
+                        } catch (_) {
+                          if (c.mounted) {
+                            ScaffoldMessenger.of(c).showSnackBar(
+                              const SnackBar(content: Text('설정 저장에 실패했습니다.')),
+                            );
+                          }
+                        }
+                      },
               ),
             ],
           ),
