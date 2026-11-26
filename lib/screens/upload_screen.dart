@@ -1,29 +1,108 @@
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../data.dart';
 import '../widgets/common.dart';
+import 'ocr_screen.dart';
 import 'result_screen.dart';
 
-// ───────── 결과 추가 ─────────
+// ───────── OCR 검사 수치 추출 ─────────
+
+List<Rec> parseOcrResults(String text) {
+  final results = <String, double>{};
+
+  final patterns = <String, RegExp>{
+    'BMI': RegExp(
+      r'(?:BMI|체질량지수)\s*[:：]?\s*(\d+(?:[.,]\d+)?)',
+      caseSensitive: false,
+    ),
+    '수축기혈압': RegExp(r'(?:수축기\s*혈압|최고혈압)\s*[:：]?\s*(\d+(?:[.,]\d+)?)'),
+    '이완기혈압': RegExp(r'(?:이완기\s*혈압|최저혈압)\s*[:：]?\s*(\d+(?:[.,]\d+)?)'),
+    '공복혈당': RegExp(r'(?:공복\s*혈당|공복시\s*혈당)\s*[:：]?\s*(\d+(?:[.,]\d+)?)'),
+    '혈색소': RegExp(r'(?:혈색소|헤모글로빈)\s*[:：]?\s*(\d+(?:[.,]\d+)?)'),
+    '총콜레스테롤': RegExp(r'총\s*콜레스테롤\s*[:：]?\s*(\d+(?:[.,]\d+)?)'),
+    '중성지방': RegExp(
+      r'(?:중성지방|Triglyceride)\s*[:：]?\s*(\d+(?:[.,]\d+)?)',
+      caseSensitive: false,
+    ),
+    'HDL': RegExp(
+      r'HDL\s*(?:콜레스테롤)?\s*[:：]?\s*(\d+(?:[.,]\d+)?)',
+      caseSensitive: false,
+    ),
+    'LDL': RegExp(
+      r'LDL\s*(?:콜레스테롤)?\s*[:：]?\s*(\d+(?:[.,]\d+)?)',
+      caseSensitive: false,
+    ),
+    'AST': RegExp(r'AST\s*[:：]?\s*(\d+(?:[.,]\d+)?)', caseSensitive: false),
+    'ALT': RegExp(r'ALT\s*[:：]?\s*(\d+(?:[.,]\d+)?)', caseSensitive: false),
+    '감마GTP': RegExp(
+      r'(?:감마\s*GTP|γ\s*[-]?\s*GTP|GGT)\s*[:：]?\s*(\d+(?:[.,]\d+)?)',
+      caseSensitive: false,
+    ),
+    '크레아티닌': RegExp(
+      r'(?:크레아티닌|Creatinine)\s*[:：]?\s*(\d+(?:[.,]\d+)?)',
+      caseSensitive: false,
+    ),
+  };
+
+  for (final line in text.split('\n')) {
+    final normalized = line.replaceAll(RegExp(r'\s+'), ' ').trim();
+
+    for (final entry in patterns.entries) {
+      final match = entry.value.firstMatch(normalized);
+
+      if (match == null) continue;
+
+      final numberText = match.group(1)!.replaceAll(',', '.');
+
+      final value = double.tryParse(numberText);
+
+      if (value != null && value.isFinite && value >= 0) {
+        results[entry.key] = value;
+      }
+    }
+  }
+
+  return [
+    for (final item in items)
+      if (results.containsKey(item.name)) Rec(item.name, results[item.name]!),
+  ];
+}
+
+// ───────── 건강검진 결과 추가 ─────────
+
 class AddScreen extends StatelessWidget {
   const AddScreen({super.key});
-  // TODO: image_picker + google_mlkit_text_recognition 으로 실제 OCR 연결.
-  // 지금은 프로토타입과 같이 인식 결과 샘플값을 보여줍니다.
-  static final ocrSample = mk([
-    24.1,
-    128,
-    84,
-    102,
-    14.1,
-    185,
-    160,
-    52,
-    110,
-    34,
-    38,
-    58,
-    1.0,
-  ]);
+
+  Future<void> openOcr(BuildContext context, ImageSource source) async {
+    final text = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(builder: (_) => OcrScreen(initialSource: source)),
+    );
+
+    if (!context.mounted || text == null) return;
+
+    final records = parseOcrResults(text);
+
+    if (records.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            '검사 수치를 자동으로 찾지 못했어요. '
+            '다시 촬영하거나 직접 입력해 주세요.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => EntryScreen(initial: records, search: false),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext c) => Scaffold(
@@ -38,30 +117,37 @@ class AddScreen extends StatelessWidget {
           Text('건강검진 결과지를 준비해 주세요', style: Theme.of(c).textTheme.titleLarge),
           const SizedBox(height: 8),
           const Text(
-            '글자가 잘 보이도록 밝은 곳에서 촬영하면\n인식이 더 정확해요.',
+            '글자가 잘 보이도록 밝은 곳에서 촬영하면\n'
+            '인식이 더 정확해요.',
             textAlign: TextAlign.center,
           ),
           const Spacer(),
+
+          // 카메라 촬영
           SizedBox(
             width: double.infinity,
             height: 54,
             child: FilledButton(
-              onPressed: () =>
-                  push(c, EntryScreen(initial: ocrSample, search: false)),
+              onPressed: () => openOcr(c, ImageSource.camera),
               child: const Text('📷 결과지 촬영'),
             ),
           ),
+
           const SizedBox(height: 10),
+
+          // 갤러리 사진 선택
           SizedBox(
             width: double.infinity,
             height: 54,
             child: OutlinedButton(
-              onPressed: () =>
-                  push(c, EntryScreen(initial: ocrSample, search: false)),
+              onPressed: () => openOcr(c, ImageSource.gallery),
               child: const Text('🖼️ 갤러리에서 사진 선택'),
             ),
           ),
+
           const SizedBox(height: 10),
+
+          // 직접 입력
           SizedBox(
             width: double.infinity,
             height: 54,
@@ -77,11 +163,14 @@ class AddScreen extends StatelessWidget {
   );
 }
 
-// ───────── 인식 결과 확인 / 직접 입력 (공용) ─────────
+// ───────── 인식 결과 확인 / 직접 입력 ─────────
+
 class EntryScreen extends StatefulWidget {
   final List<Rec> initial;
   final bool search;
+
   const EntryScreen({super.key, required this.initial, required this.search});
+
   @override
   State<EntryScreen> createState() => _EntryState();
 }
@@ -90,14 +179,20 @@ class _EntryState extends State<EntryScreen> {
   final ctrls = <Item, TextEditingController>{};
   final sq = TextEditingController();
   final hosp = TextEditingController();
+
   DateTime date = DateTime.now();
   bool saving = false;
 
   @override
   void initState() {
     super.initState();
+
     for (final r in widget.initial) {
-      ctrls[byName[r.n]!] = TextEditingController(text: f(r.v));
+      final item = byName[r.n];
+
+      if (item != null) {
+        ctrls[item] = TextEditingController(text: f(r.v));
+      }
     }
   }
 
@@ -106,13 +201,18 @@ class _EntryState extends State<EntryScreen> {
     for (final t in ctrls.values) {
       t.dispose();
     }
+
     sq.dispose();
     hosp.dispose();
     super.dispose();
   }
 
-  void toast(String m) =>
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
+  void toast(String message) {
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  // ───────── Supabase 저장 ─────────
 
   Future<void> save() async {
     if (saving) return;
@@ -139,7 +239,9 @@ class _EntryState extends State<EntryScreen> {
 
     final h = hosp.text.trim();
 
-    setState(() => saving = true);
+    setState(() {
+      saving = true;
+    });
 
     try {
       await app.add(
@@ -164,7 +266,9 @@ class _EntryState extends State<EntryScreen> {
       }
     } finally {
       if (mounted) {
-        setState(() => saving = false);
+        setState(() {
+          saving = false;
+        });
       }
     }
   }
@@ -172,6 +276,7 @@ class _EntryState extends State<EntryScreen> {
   @override
   Widget build(BuildContext c) {
     final q = sq.text.replaceAll(' ', '').toLowerCase();
+
     final sug = q.isEmpty
         ? <Item>[]
         : items
@@ -185,15 +290,20 @@ class _EntryState extends State<EntryScreen> {
               )
               .take(6)
               .toList();
+
     String last = '';
     final rows = <Widget>[];
+
     for (final e in ctrls.entries) {
       final it = e.key;
+
       if (!widget.search && it.cat != last) {
         last = it.cat;
         rows.add(catHeader(last));
       }
+
       final v = double.tryParse(e.value.text);
+
       rows.add(
         Card(
           child: Padding(
@@ -240,8 +350,11 @@ class _EntryState extends State<EntryScreen> {
                 if (widget.search)
                   IconButton(
                     icon: const Icon(Icons.close, size: 18),
-                    onPressed: () =>
-                        setState(() => ctrls.remove(it)?.dispose()),
+                    onPressed: () {
+                      setState(() {
+                        ctrls.remove(it)?.dispose();
+                      });
+                    },
                   ),
               ],
             ),
@@ -249,6 +362,7 @@ class _EntryState extends State<EntryScreen> {
         ),
       );
     }
+
     return Scaffold(
       appBar: AppBar(title: Text(widget.search ? '직접 입력' : '인식 결과 확인')),
       body: ListView(
@@ -257,8 +371,10 @@ class _EntryState extends State<EntryScreen> {
           Text(
             widget.search
                 ? '입력할 검사명을 검색해서 추가하세요.'
-                : '인식된 값이 맞는지 확인하고, 틀린 값은 직접 수정해 주세요.',
+                : '인식된 값이 맞는지 확인하고, '
+                      '틀린 값은 직접 수정해 주세요.',
           ),
+
           if (widget.search) ...[
             const SizedBox(height: 8),
             TextField(
@@ -280,16 +396,22 @@ class _EntryState extends State<EntryScreen> {
                 title: Text(i.name),
                 subtitle: Text(i.cat),
                 trailing: const Text('＋ 추가'),
-                onTap: () => setState(() {
-                  ctrls[i] = TextEditingController();
-                  sq.clear();
-                }),
+                onTap: () {
+                  setState(() {
+                    ctrls[i] = TextEditingController();
+                    sq.clear();
+                  });
+                },
               ),
             catHeader('추가한 항목 (${ctrls.length})'),
             if (ctrls.isEmpty) const Text('아직 추가한 항목이 없어요.'),
           ],
+
           ...rows,
+
           const SizedBox(height: 12),
+
+          // 검진 날짜 및 병원 입력
           Card(
             child: Padding(
               padding: const EdgeInsets.all(12),
@@ -306,7 +428,10 @@ class _EntryState extends State<EntryScreen> {
                             firstDate: DateTime(2000),
                             lastDate: DateTime.now(),
                           );
-                          if (d != null) setState(() => date = d);
+
+                          if (d != null) {
+                            setState(() => date = d);
+                          }
                         },
                         child: Text(date.toIso8601String().substring(0, 10)),
                       ),
@@ -323,10 +448,12 @@ class _EntryState extends State<EntryScreen> {
               ),
             ),
           ),
+
           const SizedBox(height: 12),
+
+          // Supabase 저장 버튼
           SizedBox(
             height: 54,
-
             child: FilledButton(
               onPressed: saving ? null : save,
               child: Text(saving ? '저장 중...' : '저장하기'),
